@@ -14,8 +14,12 @@ fi
 echo "=== [diy-part2] Verifying jdcloud_re-ss-01 device block ==="
 sed -n '/define Device\/jdcloud_re-ss-01/,/endef/p' "$IPQ60XX_MK"
 
-echo "=== [diy-part2] Verifying 1.8GHz OPP in ipq6018-cp-cpu.dtsi ==="
-grep -E "opp-1800000000" target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6018-cp-cpu.dtsi || echo "WARNING: opp-1800000000 not found!"
+echo "=== [diy-part2] Unlocking 1.608GHz & 1.8GHz CPU OPP in ipq6000-re-ss-01.dts ==="
+RE_SS_01_DTS="target/linux/qualcommax/files/arch/arm64/boot/dts/qcom/ipq6000-re-ss-01.dts"
+if [ -f "$RE_SS_01_DTS" ]; then
+  sed -i 's/opp-supported-hw = <0x1>;/opp-supported-hw = <0xf>;/g' "$RE_SS_01_DTS"
+  grep -A 2 -E "opp-1608000000|opp-1800000000" "$RE_SS_01_DTS" || true
+fi
 
 echo "=== [diy-part2] Setting default timezone & hostname ==="
 sed -i "s/hostname='OpenWrt'/hostname='JB-AX1800'/g" package/base-files/files/bin/config_generate
