@@ -1,65 +1,124 @@
 #!/bin/sh
-# Run on NEW LiBwrt/openwrt-6.x router AFTER first clean sysupgrade (without keeping KWrt config)
-# Restores clean business configs from /mnt/data/migrate_kwrt/
+# v2 - Run on NEW LiBwrt/openwrt-6.x router AFTER clean sysupgrade (without keeping KWrt config)
+# One-shot restore: safe mount, auto port mapping (lan1..lan3/wan), native Wi-Fi paths,
+# nikki geodata + TPROXY/CN-bypass tuning, full ZeroTier, root password, 4MB sysctl, and reboot.
 
 set -e
 
-# Ensure /mnt/data (mmcblk0p21) is mounted cleanly without duplicate mounts
-if ! grep -qs " /mnt/data " /proc/mounts; then
-  EXIST_MNT=$(awk '$1=="/dev/mmcblk0p21" {print $2; exit}' /proc/mounts)
-  if [ -n "$EXIST_MNT" ]; then
-    echo "INFO: /dev/mmcblk0p21 already mounted at $EXIST_MNT, using it."
-    SRC="${EXIST_MNT}/migrate_kwrt"
-  else
-    mkdir -p /mnt/data
-    mount /dev/mmcblk0p21 /mnt/data
-    SRC="/mnt/data/migrate_kwrt"
-  fi
+echo "=== [1/7] Checking /dev/mmcblk0p21 mount ==="
+EXIST_MNT=$(awk '$1=="/dev/mmcblk0p21" {print $2; exit}' /proc/mounts)
+if [ -n "$EXIST_MNT" ]; then
+  MNT="$EXIST_MNT"
+  echo "  Already mounted at $MNT"
 else
-  SRC="/mnt/data/migrate_kwrt"
+  MNT="/mnt/data"
+  mkdir -p "$MNT"
+  mount /dev/mmcblk0p21 "$MNT"
+  echo "  Mounted at $MNT"
 fi
 
+SRC="${MNT}/migrate_kwrt"
 if [ ! -d "$SRC/config" ]; then
   echo "ERROR: Backup directory $SRC/config not found!"
   exit 1
 fi
 
-echo "=== Restoring core UCI configs ==="
-for cfg in network wireless dhcp firewall nikki zerotier fstab cpufreq upnpd dropbear; do
+echo "=== [2/7] Capturing new firmware native Wi-Fi hardware paths ==="
+NEW_R0_PATH=$(uci -q get wireless.radio0.path || true)
+NEW_R1_PATH=$(uci -q get wireless.radio1.path || true)
+echo "  radio0=$NEW_R0_PATH | radio1=$NEW_R1_PATH"
+
+echo "=== [3/7] Restoring core UCI configs ==="
+for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufreq upnpd dropbear; do
   if [ -f "$SRC/config/$cfg" ]; then
     cp -a "$SRC/config/$cfg" "/etc/config/$cfg"
     echo "  + /etc/config/$cfg"
   fi
 done
 
-echo "=== Restoring nikki subscriptions & profiles ==="
-mkdir -p /etc/nikki
-cp -a "$SRC/nikki/"* /etc/nikki/ 2>/dev/null || true
-
-echo "=== Restoring ZeroTier identity ==="
-if [ -d "$SRC/zerotier" ]; then
-  mkdir -p /etc/zerotier
-  cp -a "$SRC/zerotier/"* /etc/zerotier/ 2>/dev/null || true
+echo "=== [4/7] Restoring nikki subscriptions, profiles & geodata (offline boot ready) ==="
+mkdir -p /etc/nikki/run
+cp -a "$SRC/nikki/." /etc/nikki/ 2>/dev/null || true
+if [ -d "$SRC/nikki_run" ]; then
+  cp -a "$SRC/nikki_run/." /etc/nikki/run/ 2>/dev/null || true
 fi
 
-echo "=== Restoring sysctl & SSH keys ==="
-[ -f "$SRC/sysctl.d/50-local.conf" ] && cp -a "$SRC/sysctl.d/50-local.conf" /etc/sysctl.d/50-local.conf
-[ -f "$SRC/authorized_keys" ] && mkdir -p /etc/dropbear && cp -a "$SRC/authorized_keys" /etc/dropbear/authorized_keys
+echo "=== [5/7] Restoring ZeroTier (identity, planet, controller, networks) ==="
+if [ -d "$SRC/zerotier" ]; then
+  mkdir -p /etc/zerotier
+  cp -a "$SRC/zerotier/." /etc/zerotier/ 2>/dev/null || true
+fi
 
-echo "=== Ensuring clean network port names, firewall & performance settings ==="
+echo "=== [6/7] Restoring SSH keys, root password & 4MB sysctl ==="
+if [ -f "$SRC/authorized_keys" ]; then
+  mkdir -p /etc/dropbear
+  cp -a "$SRC/authorized_keys" /etc/dropbear/authorized_keys
+fi
+if [ -s "$SRC/root.shadow" ]; then
+  ROOT_LINE=$(head -n 1 "$SRC/root.shadow")
+  grep -v '^root:' /etc/shadow > /tmp/shadow.new
+  { echo "$ROOT_LINE"; cat /tmp/shadow.new; } > /etc/shadow
+  rm -f /tmp/shadow.new
+  chmod 600 /etc/shadow
+  echo "  + root password restored"
+fi
+cat << 'EOF' > /etc/sysctl.d/50-local.conf
+net.nf_conntrack_max=65536
+net.core.rmem_max=4194304
+net.core.wmem_max=4194304
+net.core.rmem_default=262144
+net.core.wmem_default=262144
+net.core.netdev_max_backlog=4096
+net.ipv4.tcp_rmem=4096 131072 4194304
+net.ipv4.tcp_wmem=4096 65536 4194304
+net.ipv4.tcp_congestion_control=bbr
+net.core.default_qdisc=fq_codel
+EOF
+
+echo "=== [7/7] Adapting port names, Wi-Fi paths, firewall & nikki TPROXY tuning ==="
+# Adapt old eth0..eth3 to new DSA lan1..lan3 + wan
 if ip link show lan1 >/dev/null 2>&1; then
-  echo "Detected new DSA/LiBwrt port names (lan1..lan3, wan); updating br-lan ports..."
   uci -q delete network.@device[0].ports || true
   for p in lan1 lan2 lan3 wan; do
     ip link show "$p" >/dev/null 2>&1 && uci add_list network.@device[0].ports="$p"
   done
+  uci -q delete network.wan6.device || true
 fi
+uci set network.@device[0].promisc='0' 2>/dev/null || true
+
+# Restore native Wi-Fi paths
+[ -n "$NEW_R0_PATH" ] && uci set wireless.radio0.path="$NEW_R0_PATH"
+[ -n "$NEW_R1_PATH" ] && uci set wireless.radio1.path="$NEW_R1_PATH"
+
+# Clean stale KWrt firewall includes & disable conflicting flow_offloading
+for s in homeproxy_pre homeproxy_post passwall passwall_server; do
+  uci -q delete "firewall.$s" || true
+done
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].flow_offloading_hw='0'
-uci set network.@device[0].promisc='0' 2>/dev/null || true
+
+# Ensure CPU performance & nikki TPROXY + CN bypass + fast CN DNS
 uci set cpufreq.cpufreq.governor0='performance' 2>/dev/null || true
+if uci -q get nikki.proxy >/dev/null 2>&1; then
+  uci set nikki.proxy.tcp_mode='redirect'
+  uci set nikki.proxy.udp_mode='tproxy'
+  uci set nikki.mixin.tun_enabled='0'
+  uci set nikki.proxy.bypass_china_mainland_ip='1'
+  uci set nikki.proxy.bypass_china_mainland_ip6='1'
+  uci set nikki.mixin.dns_nameserver_policy='1'
+  uci -q delete nikki.@nameserver[1].nameserver || true
+  uci add_list nikki.@nameserver[1].nameserver='223.5.5.5'
+  uci add_list nikki.@nameserver[1].nameserver='119.29.29.29'
+  uci set nikki.@nameserver[2].enabled='1'
+  uci -q delete nikki.@nameserver[2].nameserver || true
+  uci add_list nikki.@nameserver[2].nameserver='223.5.5.5'
+  uci add_list nikki.@nameserver[2].nameserver='119.29.29.29'
+fi
+
 uci commit
 
+echo "=== Verification before reboot ==="
+uci show network.@device[0]
 echo "=== Restore complete! Rebooting in 5 seconds... ==="
 sleep 5
 reboot
