@@ -1,0 +1,146 @@
+name: Build JDCloud AX1800 Pro (NSS 512M)
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_branch:
+        description: 'LiBwrt/openwrt-6.x branch'
+        required: true
+        default: '25.12-nss'
+      upload_release:
+        description: 'Publish firmware to GitHub Release'
+        type: boolean
+        default: true
+  schedule:
+    # Weekly build every Sunday 04:00 UTC+8 (Saturday 20:00 UTC)
+    - cron: '0 20 * * 6'
+
+permissions:
+  contents: write
+
+env:
+  REPO_URL: https://github.com/LiBwrt/openwrt-6.x.git
+  REPO_BRANCH: ${{ github.event.inputs.repo_branch || '25.12-nss' }}
+  CONFIG_FILE: configs/jdcloud_re-ss-01-512m-nss.config
+  DIY_P1_SH: scripts/diy-part1.sh
+  DIY_P2_SH: scripts/diy-part2.sh
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout builder repo
+        uses: actions/checkout@v4
+
+      - name: Maximize free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib \
+            g++-multilib gettext genisoimage git gperf haveged help2man intltool libc6-dev-i386 \
+            libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool \
+            llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+            python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+
+      - name: Clone LiBwrt/openwrt-6.x
+        run: |
+          git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" openwrt
+          echo "OPENWRT_COMMIT=$(git -C openwrt rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Run diy-part1.sh (add custom feeds)
+        run: |
+          chmod +x "$DIY_P1_SH" "$DIY_P2_SH"
+          cp "$DIY_P1_SH" openwrt/diy-part1.sh
+          cd openwrt && ./diy-part1.sh
+
+      - name: Update and install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply custom config, files, and diy-part2.sh
+        run: |
+          cp "$CONFIG_FILE" openwrt/.config
+          if [ -d files ]; then
+            cp -a files openwrt/
+            chmod +x openwrt/files/usr/bin/* 2>/dev/null || true
+            sed -i "s|__GITHUB_REPO__|${{ github.repository }}|g" openwrt/files/usr/bin/jb-upgrade
+          fi
+          cp "$DIY_P2_SH" openwrt/diy-part2.sh
+          cd openwrt
+          ./diy-part2.sh
+          make defconfig
+          echo "=== Key NSS & Target config verification ==="
+          grep -E "TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01|ATH11K_NSS_SUPPORT|ATH11K_MEM_PROFILE_512M|PACKAGE_kmod-qca-nss|PACKAGE_luci-app-nikki" .config || true
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: openwrt/.ccache
+          key: ccache-ipq60xx-${{ env.REPO_BRANCH }}-${{ hashFiles('configs/**') }}
+          restore-keys: |
+            ccache-ipq60xx-${{ env.REPO_BRANCH }}-
+
+      - name: Download packages
+        run: |
+          cd openwrt
+          make download -j$(nproc)
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        run: |
+          cd openwrt
+          echo "Compiling with $(nproc) threads..."
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Organize output firmware
+        id: organize
+        run: |
+          mkdir -p release_files
+          TARGET_DIR="openwrt/bin/targets/qualcommax/ipq60xx"
+          cp -v "$TARGET_DIR"/*jdcloud_re-ss-01* release_files/
+          cp -v openwrt/.config release_files/config.buildinfo
+          cd release_files
+          sha256sum * > sha256sums.txt
+          ls -lh
+          echo "BUILD_DATE=$(date +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jdcloud-re-ss-01-nss-512m-${{ env.BUILD_DATE }}
+          path: release_files/
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.upload_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.BUILD_DATE }}
+          name: JDCloud AX1800 Pro NSS-512M (${{ env.BUILD_DATE }})
+          body: |
+            ### Build Info
+            - **Base Repo**: `LiBwrt/openwrt-6.x` (`${{ env.REPO_BRANCH }}` @ `${{ env.OPENWRT_COMMIT }}`)
+            - **Target**: `qualcommax/ipq60xx` (`jdcloud_re-ss-01`, compatible with `jdcloud,ax1800-pro`)
+            - **Hardware Offload**: Full Qualcomm NSS (Wired ECM + Wireless `ath11k` NSS Offload, 512MB RAM profile)
+            - **CPU**: IPQ6018 1.8GHz quad-core unlocked
+            - **Core Packages**: `nikki` (mihomo), `zerotier`, `ttyd`, `ddns-aliyun`, `argon`, `uhttpd` (lean for 512MB RAM)
+
+            ### Upgrade Notes
+            - **First migration from KWrt**: Flash `*-squashfs-sysupgrade.bin` **WITHOUT** keeping settings, then run `/mnt/data/migrate_kwrt/migrate_restore.sh`.
+            - **Subsequent upgrades (same repo)**: Flash `*-squashfs-sysupgrade.bin` via LuCI with **Keep settings** checked, or SSH in and run `jb-upgrade`.
+          files: release_files/*
+          make_latest: true

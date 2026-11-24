@@ -1,0 +1,58 @@
+#!/bin/sh
+# One-click firmware upgrade from GitHub Releases (preserves config by default)
+# Usage: jb-upgrade [--force-no-keep] [github-mirror-prefix]
+# Example: jb-upgrade
+# Example with mirror: jb-upgrade https://gh-proxy.com/
+
+set -e
+
+REPO="__GITHUB_REPO__"
+KEEP_FLAG=""
+MIRROR=""
+
+for arg in "$@"; do
+  case "$arg" in
+    --force-no-keep|-n) KEEP_FLAG="-n" ;;
+    http*) MIRROR="$arg" ;;
+  esac
+done
+
+API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+TMP_DIR="/tmp/jb-upgrade"
+mkdir -p "$TMP_DIR"
+
+echo "[1/4] Checking latest release from ${REPO}..."
+RELEASE_JSON=$(curl -fsSL --max-time 15 "$API_URL")
+TAG=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+FW_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name | test("jdcloud_re-ss-01-squashfs-sysupgrade\\.bin$")) | .browser_download_url' | head -n 1)
+SHA_URL=$(echo "$RELEASE_JSON" | jq -r '.assets[] | select(.name == "sha256sums.txt") | .browser_download_url' | head -n 1)
+
+if [ -z "$FW_URL" ] || [ "$FW_URL" = "null" ]; then
+  echo "ERROR: Could not find jdcloud_re-ss-01-squashfs-sysupgrade.bin in release ${TAG}."
+  exit 1
+fi
+
+echo "Found latest release: ${TAG}"
+FW_NAME=$(basename "$FW_URL")
+DL_FW="${MIRROR}${FW_URL}"
+DL_SHA="${MIRROR}${SHA_URL}"
+
+echo "[2/4] Downloading ${FW_NAME}..."
+curl -fL --progress-bar -o "${TMP_DIR}/${FW_NAME}" "$DL_FW"
+
+if [ -n "$SHA_URL" ] && [ "$SHA_URL" != "null" ]; then
+  echo "[3/4] Verifying SHA256 checksum..."
+  curl -fsSL -o "${TMP_DIR}/sha256sums.txt" "$DL_SHA"
+  EXPECTED=$(grep " ${FW_NAME}$" "${TMP_DIR}/sha256sums.txt" | awk '{print $1}')
+  ACTUAL=$(sha256sum "${TMP_DIR}/${FW_NAME}" | awk '{print $1}')
+  if [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "ERROR: SHA256 mismatch! Expected=${EXPECTED}, Actual=${ACTUAL}"
+    exit 1
+  fi
+  echo "SHA256 verified OK: ${ACTUAL}"
+else
+  echo "[3/4] Skipping SHA256 (sha256sums.txt not found)."
+fi
+
+echo "[4/4] Starting sysupgrade ${KEEP_FLAG:+(WITHOUT keeping config)}..."
+sysupgrade -v ${KEEP_FLAG} "${TMP_DIR}/${FW_NAME}"

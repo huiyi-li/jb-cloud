@@ -1,0 +1,7 @@
+# Build & temp files
+*.log
+*.bin
+*.img
+*.tar.gz
+.DS_Store
+Thumbs.db
