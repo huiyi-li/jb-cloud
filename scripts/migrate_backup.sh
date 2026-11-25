@@ -1,6 +1,7 @@
 #!/bin/sh
-# v2 - Run on CURRENT KWrt router BEFORE flashing LiBwrt/openwrt-6.x
-# Backs up clean business configs + nikki geodata + full ZeroTier (planet/controller/identity) + root shadow
+# v3 - Run on CURRENT KWrt router BEFORE flashing LiBwrt/openwrt-6.x
+# Backs up clean business configs + nikki offline assets (ui/ruleset/providers/geodata)
+# + full ZeroTier (planet/controller/identity) + root shadow
 
 set -e
 
@@ -24,17 +25,24 @@ for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufr
   fi
 done
 
-echo "=== [2/5] Backing up nikki profiles, subscriptions, mixin & geodata ==="
+echo "=== [2/5] Backing up nikki profiles, subscriptions, mixin & offline assets ==="
 for item in subscriptions profiles mixin.yaml; do
   if [ -e "/etc/nikki/$item" ]; then
     cp -a "/etc/nikki/$item" "$DST/nikki/"
     echo "  + /etc/nikki/$item"
   fi
 done
-for geo in geoip.metadb geosite.dat geoip.dat ASN.mmdb; do
+for geo in geoip.metadb GeoSite.dat geosite.dat geoip.dat ASN.mmdb; do
   if [ -f "/etc/nikki/run/$geo" ]; then
     cp -a "/etc/nikki/run/$geo" "$DST/nikki_run/"
     echo "  + /etc/nikki/run/$geo"
+  fi
+done
+for dir in ui ruleset providers; do
+  if [ -d "/etc/nikki/run/$dir" ]; then
+    rm -rf "$DST/nikki_run/$dir"
+    cp -a "/etc/nikki/run/$dir" "$DST/nikki_run/"
+    echo "  + /etc/nikki/run/$dir/"
   fi
 done
 
