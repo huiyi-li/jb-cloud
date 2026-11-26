@@ -118,8 +118,10 @@ done
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].flow_offloading_hw='0'
 
-# Ensure CPU performance & nikki TPROXY + offline-safe local preference + CN bypass + fast CN DNS
-uci set cpufreq.cpufreq.governor0='performance' 2>/dev/null || true
+# Ensure CPU schedutil (1.2GHz idle -> 1.8GHz load boost) & nikki TPROXY + offline-safe local preference + CN bypass + fast CN DNS
+uci set cpufreq.cpufreq.governor0='schedutil' 2>/dev/null || true
+uci set cpufreq.cpufreq.minfreq0='1200000' 2>/dev/null || true
+uci set cpufreq.cpufreq.maxfreq0='1800000' 2>/dev/null || true
 if uci -q get nikki.proxy >/dev/null 2>&1; then
   uci set nikki.subscription.prefer='local' 2>/dev/null || true
   uci set nikki.proxy.tcp_mode='redirect'
