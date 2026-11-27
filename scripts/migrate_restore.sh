@@ -118,6 +118,11 @@ done
 uci set firewall.@defaults[0].flow_offloading='0'
 uci set firewall.@defaults[0].flow_offloading_hw='0'
 
+# Allow SSH & LuCI admin access from Wi-Fi bridge (br-nikki / 192.168.66.1) and all LANs
+uci -q delete dropbear.main.Interface || true
+uci -q delete dropbear.@dropbear[0].Interface || true
+uci set firewall.nikkizone.input='ACCEPT' 2>/dev/null || true
+
 # Ensure CPU schedutil (1.2GHz idle -> 1.8GHz load boost) & nikki TPROXY + offline-safe local preference + CN bypass + fast CN DNS
 uci set cpufreq.cpufreq.governor0='schedutil' 2>/dev/null || true
 uci set cpufreq.cpufreq.minfreq0='1200000' 2>/dev/null || true
