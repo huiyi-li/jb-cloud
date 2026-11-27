@@ -18,7 +18,7 @@ DST="${MNT}/migrate_kwrt"
 mkdir -p "$DST/config" "$DST/nikki" "$DST/nikki_run" "$DST/zerotier" "$DST/sysctl.d"
 
 echo "=== [1/5] Backing up core UCI configs ==="
-for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufreq upnpd dropbear; do
+for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufreq upnpd dropbear etherwake; do
   if [ -f "/etc/config/$cfg" ]; then
     cp -a "/etc/config/$cfg" "$DST/config/"
     echo "  + /etc/config/$cfg"

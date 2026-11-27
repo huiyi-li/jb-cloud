@@ -30,7 +30,7 @@ NEW_R1_PATH=$(uci -q get wireless.radio1.path || true)
 echo "  radio0=$NEW_R0_PATH | radio1=$NEW_R1_PATH"
 
 echo "=== [3/7] Restoring core UCI configs ==="
-for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufreq upnpd dropbear; do
+for cfg in network wireless dhcp firewall nikki zerotier fstab ddns-aliyun cpufreq upnpd dropbear etherwake; do
   if [ -f "$SRC/config/$cfg" ]; then
     cp -a "$SRC/config/$cfg" "/etc/config/$cfg"
     echo "  + /etc/config/$cfg"
